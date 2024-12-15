@@ -1,21 +1,16 @@
-import glob
-import math
 import os
+import glob
 import random
-import shutil
-import time
 from pathlib import Path
-from threading import Thread
 
 import cv2
 import numpy as np
 import torch
 from PIL import ExifTags, Image
 from torch.utils.data import Dataset
-from torchvision.transforms import Compose
 from tqdm import tqdm
 
-from utils.transforms import letterbox, random_affine
+from utils.transforms import augment_hsv, letterbox, random_affine
 from utils.utils import xywh2xyxy, xyxy2xywh
 
 help_url = "https://github.com/ultralytics/yolov3/wiki/Train-Custom-Data"
@@ -42,6 +37,122 @@ def exif_size(img):
 
     return s
 
+
+def load_classes(path):
+    # Loads *.names file at 'path'
+    with open(path, "r") as f:
+        names = f.read().split("\n")
+    return list(
+        filter(None, names)
+    )  # filter removes empty strings (such as last line)
+
+
+def labels_to_class_weights(labels, nc=80):
+    # Get class weights (inverse frequency) from training labels
+    if labels[0] is None:  # no labels loaded
+        return torch.Tensor()
+
+    labels = np.concatenate(labels, 0)  # labels.shape = (866643, 5) for COCO
+    classes = labels[:, 0].astype(np.int)  # labels = [class xywh]
+    weights = np.bincount(classes, minlength=nc)  # occurences per class
+
+    # Prepend gridpoint count (for uCE trianing)
+    # gpi = ((320 / 32 * np.array([1, 2, 4])) ** 2 * 3).sum()  # gridpoints per image
+    # weights = np.hstack([gpi * len(labels)  - weights.sum() * 9, weights * 9]) ** 0.5  # prepend gridpoints to start
+
+    weights[weights == 0] = 1  # replace empty bins with 1
+    weights = 1 / weights  # number of targets per class
+    weights /= weights.sum()  # normalize
+    return torch.from_numpy(weights)
+
+
+def labels_to_image_weights(labels, nc=80, class_weights=np.ones(80)):
+    # Produces image weights based on class mAPs
+    n = len(labels)
+    class_counts = np.array(
+        [
+            np.bincount(labels[i][:, 0].astype(np.int), minlength=nc)
+            for i in range(n)
+        ]
+    )
+    image_weights = (class_weights.reshape(1, nc) * class_counts).sum(1)
+    # index = random.choices(range(n), weights=image_weights, k=1)  # weight image sample
+    return image_weights
+
+class LoadImages:  # for inference
+    def __init__(self, path, img_size=416):
+        path = str(Path(path))  # os-agnostic
+        files = []
+        if os.path.isdir(path):
+            files = sorted(glob.glob(os.path.join(path, '*.*')))
+        elif os.path.isfile(path):
+            files = [path]
+
+        images = [x for x in files if os.path.splitext(x)[-1].lower() in img_formats]
+        videos = [x for x in files if os.path.splitext(x)[-1].lower() in vid_formats]
+        nI, nV = len(images), len(videos)
+
+        self.img_size = img_size
+        self.files = images + videos
+        self.nF = nI + nV  # number of files
+        self.video_flag = [False] * nI + [True] * nV
+        self.mode = 'images'
+        if any(videos):
+            self.new_video(videos[0])  # new video
+        else:
+            self.cap = None
+        assert self.nF > 0, 'No images or videos found in ' + path
+
+    def __iter__(self):
+        self.count = 0
+        return self
+
+    def __next__(self):
+        if self.count == self.nF:
+            raise StopIteration
+        path = self.files[self.count]
+
+        if self.video_flag[self.count]:
+            # Read video
+            self.mode = 'video'
+            ret_val, img0 = self.cap.read()
+            if not ret_val:
+                self.count += 1
+                self.cap.release()
+                if self.count == self.nF:  # last video
+                    raise StopIteration
+                else:
+                    path = self.files[self.count]
+                    self.new_video(path)
+                    ret_val, img0 = self.cap.read()
+
+            self.frame += 1
+            print('video %g/%g (%g/%g) %s: ' % (self.count + 1, self.nF, self.frame, self.nframes, path), end='')
+
+        else:
+            # Read image
+            self.count += 1
+            img0 = cv2.imread(path)  # BGR
+            assert img0 is not None, 'Image Not Found ' + path
+            print('image %g/%g %s: ' % (self.count, self.nF, path), end='')
+
+        # Padded resize
+        img = letterbox(img0, new_shape=self.img_size)[0]
+
+        # Convert
+        img = img[:, :, ::-1].transpose(2, 0, 1)  # BGR to RGB, to 3x416x416
+        img = np.ascontiguousarray(img)
+
+        # cv2.imwrite(path + '.letterbox.jpg', 255 * img.transpose((1, 2, 0))[:, :, ::-1])  # save letterbox image
+        return path, img, img0, self.cap
+
+    def new_video(self, path):
+        self.frame = 0
+        self.cap = cv2.VideoCapture(path)
+        self.nframes = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+    def __len__(self):
+        return self.nF  # number of files
 
 class LoadImagesAndLabels(Dataset):  # for training/testing
     def __init__(
@@ -192,7 +303,6 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                     # Create subdataset (a smaller dataset)
                     if create_datasubset and ns < 1e4:
                         if ns == 0:
-                            create_folder(path="./datasubset")
                             os.makedirs("./datasubset/images")
                         exclude_classes = 43
                         if exclude_classes not in l[:, 0]:
@@ -298,7 +408,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         hyp = self.hyp
         if self.mosaic:
             # Load mosaic
-            img, labels, dp_img = load_mosaic(self, index)
+            img, labels, dp_img = self.load_mosaic(index)
             dp_img = cv2.resize(
                 dp_img,
                 (self.img_size, self.img_size),
@@ -480,121 +590,103 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
             )  # img, hw_original, hw_resized, depth_image
 
 
-def augment_hsv(img, hgain=0.5, sgain=0.5, vgain=0.5):
-    x = np.random.uniform(-1, 1, 3) * [hgain, sgain, vgain] + 1  # random gains
-    img_hsv = (
-        (cv2.cvtColor(img, cv2.COLOR_BGR2HSV) * x)
-        .clip(None, 255)
-        .astype(np.uint8)
-    )
-    np.clip(
-        img_hsv[:, :, 0], None, 179, out=img_hsv[:, :, 0]
-    )  # inplace hue clip (0 - 179 deg)
-    cv2.cvtColor(img_hsv, cv2.COLOR_HSV2BGR, dst=img)  # no return needed
+    def load_mosaic(self, index):
+        # loads images in a mosaic
 
-    # Histogram equalization
-    # if random.random() < 0.2:
-    #     for i in range(3):
-    #         img[:, :, i] = cv2.equalizeHist(img[:, :, i])
+        labels4 = []
+        s = self.img_size
+        # print("image_size in load_mosaic", self.img_size)
+        xc, yc = [
+            int(random.uniform(s * 0.5, s * 1.5)) for _ in range(2)
+        ]  # mosaic center x, y
+        indices = [index] + [
+            random.randint(0, len(self.labels) - 1) for _ in range(3)
+        ]  # 3 additional image indices
+        for i, index in enumerate(indices):
+            # Load image
+            img, _, (h, w), dp_img = self.load_image(index)
 
+            # place img in img4
+            if i == 0:  # top left
+                img4 = np.full(
+                    (s * 2, s * 2, img.shape[2]), 114, dtype=np.uint8
+                )  # base image with 4 tiles
+                # dp_img4 = np.full((s * 2, s * 2, dp_img.shape[2]), 114, dtype=np.uint8)  # base depth image with 4 tiles
+                x1a, y1a, x2a, y2a = (
+                    max(xc - w, 0),
+                    max(yc - h, 0),
+                    xc,
+                    yc,
+                )  # xmin, ymin, xmax, ymax (large image)
+                x1b, y1b, x2b, y2b = (
+                    w - (x2a - x1a),
+                    h - (y2a - y1a),
+                    w,
+                    h,
+                )  # xmin, ymin, xmax, ymax (small image)
+            elif i == 1:  # top right
+                x1a, y1a, x2a, y2a = xc, max(yc - h, 0), min(xc + w, s * 2), yc
+                x1b, y1b, x2b, y2b = 0, h - (y2a - y1a), min(w, x2a - x1a), h
+            elif i == 2:  # bottom left
+                x1a, y1a, x2a, y2a = max(xc - w, 0), yc, xc, min(s * 2, yc + h)
+                x1b, y1b, x2b, y2b = (
+                    w - (x2a - x1a),
+                    0,
+                    max(xc, w),
+                    min(y2a - y1a, h),
+                )
+            elif i == 3:  # bottom right
+                x1a, y1a, x2a, y2a = xc, yc, min(xc + w, s * 2), min(s * 2, yc + h)
+                x1b, y1b, x2b, y2b = 0, 0, min(w, x2a - x1a), min(y2a - y1a, h)
 
-def load_mosaic(self, index):
-    # loads images in a mosaic
+            img4[y1a:y2a, x1a:x2a] = img[
+                y1b:y2b, x1b:x2b
+            ]  # img4[ymin:ymax, xmin:xmax]
+            # dp_img4[y1a:y2a, x1a:x2a] = dp_img[y1b:y2b, x1b:x2b]  # img4[ymin:ymax, xmin:xmax] depth
+            padw = x1a - x1b
+            padh = y1a - y1b
 
-    labels4 = []
-    s = self.img_size
-    # print("image_size in load_mosaic", self.img_size)
-    xc, yc = [
-        int(random.uniform(s * 0.5, s * 1.5)) for _ in range(2)
-    ]  # mosaic center x, y
-    indices = [index] + [
-        random.randint(0, len(self.labels) - 1) for _ in range(3)
-    ]  # 3 additional image indices
-    for i, index in enumerate(indices):
-        # Load image
-        img, _, (h, w), dp_img = self.load_image(index)
+            # Load labels
+            label_path = self.label_files[index]
+            if os.path.isfile(label_path):
+                x = self.labels[index]
+                if x is None:  # labels not preloaded
+                    with open(label_path, "r") as f:
+                        x = np.array(
+                            [x.split() for x in f.read().splitlines()],
+                            dtype=np.float32,
+                        )
 
-        # place img in img4
-        if i == 0:  # top left
-            img4 = np.full(
-                (s * 2, s * 2, img.shape[2]), 114, dtype=np.uint8
-            )  # base image with 4 tiles
-            # dp_img4 = np.full((s * 2, s * 2, dp_img.shape[2]), 114, dtype=np.uint8)  # base depth image with 4 tiles
-            x1a, y1a, x2a, y2a = (
-                max(xc - w, 0),
-                max(yc - h, 0),
-                xc,
-                yc,
-            )  # xmin, ymin, xmax, ymax (large image)
-            x1b, y1b, x2b, y2b = (
-                w - (x2a - x1a),
-                h - (y2a - y1a),
-                w,
-                h,
-            )  # xmin, ymin, xmax, ymax (small image)
-        elif i == 1:  # top right
-            x1a, y1a, x2a, y2a = xc, max(yc - h, 0), min(xc + w, s * 2), yc
-            x1b, y1b, x2b, y2b = 0, h - (y2a - y1a), min(w, x2a - x1a), h
-        elif i == 2:  # bottom left
-            x1a, y1a, x2a, y2a = max(xc - w, 0), yc, xc, min(s * 2, yc + h)
-            x1b, y1b, x2b, y2b = (
-                w - (x2a - x1a),
-                0,
-                max(xc, w),
-                min(y2a - y1a, h),
-            )
-        elif i == 3:  # bottom right
-            x1a, y1a, x2a, y2a = xc, yc, min(xc + w, s * 2), min(s * 2, yc + h)
-            x1b, y1b, x2b, y2b = 0, 0, min(w, x2a - x1a), min(y2a - y1a, h)
+                if x.size > 0:
+                    # Normalized xywh to pixel xyxy format
+                    labels = x.copy()
+                    labels[:, 1] = w * (x[:, 1] - x[:, 3] / 2) + padw
+                    labels[:, 2] = h * (x[:, 2] - x[:, 4] / 2) + padh
+                    labels[:, 3] = w * (x[:, 1] + x[:, 3] / 2) + padw
+                    labels[:, 4] = h * (x[:, 2] + x[:, 4] / 2) + padh
+                else:
+                    labels = np.zeros((0, 5), dtype=np.float32)
+                labels4.append(labels)
 
-        img4[y1a:y2a, x1a:x2a] = img[
-            y1b:y2b, x1b:x2b
-        ]  # img4[ymin:ymax, xmin:xmax]
-        # dp_img4[y1a:y2a, x1a:x2a] = dp_img[y1b:y2b, x1b:x2b]  # img4[ymin:ymax, xmin:xmax] depth
-        padw = x1a - x1b
-        padh = y1a - y1b
+        # Concat/clip labels
+        if len(labels4):
+            labels4 = np.concatenate(labels4, 0)
+            # np.clip(labels4[:, 1:] - s / 2, 0, s, out=labels4[:, 1:])  # use with center crop
+            np.clip(
+                labels4[:, 1:], 0, 2 * s, out=labels4[:, 1:]
+            )  # use with random_affine
 
-        # Load labels
-        label_path = self.label_files[index]
-        if os.path.isfile(label_path):
-            x = self.labels[index]
-            if x is None:  # labels not preloaded
-                with open(label_path, "r") as f:
-                    x = np.array(
-                        [x.split() for x in f.read().splitlines()],
-                        dtype=np.float32,
-                    )
+        # Augment
+        # img4 = img4[s // 2: int(s * 1.5), s // 2:int(s * 1.5)]  # center crop (WARNING, requires box pruning)
+        img4, labels4, dp_img = random_affine(
+            img4,
+            dp_img,
+            labels4,
+            degrees=self.hyp["degrees"] * 1,
+            translate=self.hyp["translate"] * 1,
+            scale=self.hyp["scale"] * 1,
+            shear=self.hyp["shear"] * 1,
+            border=-s // 2,
+        )  # border to remove
 
-            if x.size > 0:
-                # Normalized xywh to pixel xyxy format
-                labels = x.copy()
-                labels[:, 1] = w * (x[:, 1] - x[:, 3] / 2) + padw
-                labels[:, 2] = h * (x[:, 2] - x[:, 4] / 2) + padh
-                labels[:, 3] = w * (x[:, 1] + x[:, 3] / 2) + padw
-                labels[:, 4] = h * (x[:, 2] + x[:, 4] / 2) + padh
-            else:
-                labels = np.zeros((0, 5), dtype=np.float32)
-            labels4.append(labels)
-
-    # Concat/clip labels
-    if len(labels4):
-        labels4 = np.concatenate(labels4, 0)
-        # np.clip(labels4[:, 1:] - s / 2, 0, s, out=labels4[:, 1:])  # use with center crop
-        np.clip(
-            labels4[:, 1:], 0, 2 * s, out=labels4[:, 1:]
-        )  # use with random_affine
-
-    # Augment
-    # img4 = img4[s // 2: int(s * 1.5), s // 2:int(s * 1.5)]  # center crop (WARNING, requires box pruning)
-    img4, labels4, dp_img = random_affine(
-        img4,
-        dp_img,
-        labels4,
-        degrees=self.hyp["degrees"] * 1,
-        translate=self.hyp["translate"] * 1,
-        scale=self.hyp["scale"] * 1,
-        shear=self.hyp["shear"] * 1,
-        border=-s // 2,
-    )  # border to remove
-
-    return img4, labels4, dp_img
+        return img4, labels4, dp_img

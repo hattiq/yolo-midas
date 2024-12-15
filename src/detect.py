@@ -1,26 +1,14 @@
+import shutil
 import argparse
 from sys import platform
 import configparser as cp
 
 from model.mde_net import *  # set ONNX_EXPORT in models.py
-from utils.dataset import *
-from utils.utils import *
-
-conf = cp.RawConfigParser()
-conf_path = "cfg/mde.cfg"
-conf.read(conf_path)
-
-yolo_props = {}
-yolo_props["anchors"] = np.array([float(x) for x in conf.get("yolo", "anchors").split(',')]).reshape((-1, 2))
-yolo_props["num_classes"] = conf.get("yolo", "classes")
-
-freeze = {}
-alpha = {}
-freeze["resnet"], alpha["resnet"] = (True, 0) if conf.get("freeze", "resnet") == "True" else (False, 1)
-freeze["midas"], alpha["midas"] = (True, 0) if conf.get("freeze", "midas") == "True" else (False, 1)
-freeze["yolo"], alpha["yolo"] = (True, 0) if conf.get("freeze", "yolo") == "True" else (False, 1)
+from utils import *
 
 def detect(save_img=False):
+    yolo_props, freeze, alpha = parse_yolo_freeze_cfg(opt.cfg)
+
     img_size = (320, 192) if ONNX_EXPORT else opt.img_size  # (320, 192) or (416, 256) or (608, 352) for (height, width)
     out, source, weights, half, view_img, save_txt = opt.output, opt.source, opt.weights, opt.half, opt.view_img, opt.save_txt
     webcam = source == '0' or source.startswith('rtsp') or source.startswith('http') or source.endswith('.txt')
@@ -82,9 +70,7 @@ def detect(save_img=False):
     # Set Dataloader
     vid_path, vid_writer = None, None
     if webcam:
-        view_img = True
-        torch.backends.cudnn.benchmark = True  # set True to speed up constant image size inference
-        dataset = LoadStreams(source, img_size=img_size)
+        raise Exception('Webcam not supported.')
     else:
         save_img = True
         dataset = LoadImages(source, img_size=img_size)

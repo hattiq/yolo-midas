@@ -1,5 +1,6 @@
 import os
 
+import configparser as cp
 import numpy as np
 
 
@@ -113,3 +114,28 @@ def parse_data_cfg(path):
         options[key.strip()] = val.strip()
 
     return options
+
+
+def parse_yolo_freeze_cfg(path):
+    conf = cp.RawConfigParser()
+    conf.read(path)
+    yolo_props = {}
+
+    yolo_props["anchors"] = np.array(
+        [float(x) for x in conf.get("yolo", "anchors").split(",")]
+    ).reshape((-1, 2))
+    yolo_props["num_classes"] = conf.get("yolo", "classes")
+
+    freeze = {}
+    alpha = {}
+    freeze["resnet"], alpha["resnet"] = (
+        (True, 0) if conf.get("freeze", "resnet") == "True" else (False, 1)
+    )
+    freeze["midas"], alpha["midas"] = (
+        (True, 0) if conf.get("freeze", "midas") == "True" else (False, 1)
+    )
+    freeze["yolo"], alpha["yolo"] = (
+        (True, 0) if conf.get("freeze", "yolo") == "True" else (False, 1)
+    )
+
+    return yolo_props, freeze, alpha

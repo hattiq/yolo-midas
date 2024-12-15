@@ -5,11 +5,10 @@ import torch.distributed as dist
 import torch.optim as optim
 import torch.optim.lr_scheduler as lr_scheduler
 
-from utils import test  # import test.py to get mAP after each epoch
+from . import test  # import test.py to get mAP after each epoch
 from model.mde_net import MDENet
-from utils.dataset import *
-from utils.utils import *
-from utils.parse_config import *
+from utils import *
+
 
 """
 import matplotlib.pyplot as plt
@@ -66,19 +65,6 @@ if hyp['fl_gamma']:
     print('Using FocalLoss(gamma=%g)' % hyp['fl_gamma'])
     
 
-conf = cp.RawConfigParser()
-conf.read("cfg/mde.cfg")
-yolo_props = {}
-yolo_props["anchors"] = np.array([float(x) for x in conf.get("yolo", "anchors").split(',')]).reshape((-1, 2))
-yolo_props["num_classes"] = conf.get("yolo", "classes")
-
-freeze = {}
-alpha = {}
-freeze["resnet"], alpha["resnet"] = (True, 0) if conf.get("freeze", "resnet") == "True" else (False, 1)
-freeze["midas"], alpha["midas"] = (True, 0) if conf.get("freeze", "midas") == "True" else (False, 1)
-freeze["yolo"], alpha["yolo"] = (True, 0) if conf.get("freeze", "yolo") == "True" else (False, 1)
-freeze["planercnn"], alpha["planercnn"] = (True, 0) if conf.get("freeze", "planercnn") == "True" else (False, 1)
-
 def train():
     cfg = opt.cfg
 
@@ -103,6 +89,7 @@ def train():
     img_size = imgsz_max  # initialize with max size
     # Configure run
     init_seeds()
+    yolo_props, freeze, alpha = parse_yolo_freeze_cfg(cfg)
     data_dict = parse_data_cfg(data)
     train_path = data_dict['train']
     test_path = data_dict['valid']
@@ -250,7 +237,7 @@ def train():
     model.class_weights = labels_to_class_weights(dataset.labels, nc).to(device)  # attach class weights
 
     # Model EMA
-    ema = torch_utils.ModelEMA(model)
+    ema = ModelEMA(model)
 
     # Start training
     nb = len(dataloader)  # number of batches
@@ -278,7 +265,7 @@ def train():
         mloss = torch.zeros(5).to(device)  # mean losses
         print(('\n' + '%10s' * 9) % ('Epoch', 'gpu_mem', 'GIoU', 'obj', 'cls', 'l_depth', 'total', 'targets', 'img_size'))
         pbar = tqdm(enumerate(dataloader), total=nb)  # progress bar
-        for i, (imgs, targets, paths, _, dp_imgs, pln_imgs) in pbar:  # batch -------------------------------------------------------------
+        for i, (imgs, targets, paths, _, dp_imgs) in pbar:  # batch -------------------------------------------------------------
             #print("imgs:", len(imgs))
             #print("targets:", targets)
             #print("paths:", paths)
@@ -476,7 +463,7 @@ if __name__ == '__main__':
 
     opt.weights = last if opt.resume else opt.weights
     opt.img_size.extend([opt.img_size[-1]] * (3 - len(opt.img_size)))  # extend to 3 sizes (min, max, test)
-    device = torch_utils.select_device(opt.device, apex=mixed_precision, batch_size=opt.batch_size)
+    device = select_device(opt.device, apex=mixed_precision, batch_size=opt.batch_size)
     if device.type == 'cpu':
         mixed_precision = False
 

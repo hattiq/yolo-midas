@@ -1,38 +1,9 @@
 import argparse
-import configparser as cp
-import json
-
-import cv2
-from torch import nn
+import time
 from torch.utils.data import DataLoader
 
 from model.mde_net import *
-from utils.dataset import *
-
-from .utils.parse_config import *
-from .utils.utils import *
-
-conf = cp.RawConfigParser()
-conf.read("cfg/mde.cfg")
-yolo_props = {}
-
-yolo_props["anchors"] = np.array(
-    [float(x) for x in conf.get("yolo", "anchors").split(",")]
-).reshape((-1, 2))
-yolo_props["num_classes"] = conf.get("yolo", "classes")
-
-freeze = {}
-alpha = {}
-freeze["resnet"], alpha["resnet"] = (
-    (True, 0) if conf.get("freeze", "resnet") == "True" else (False, 1)
-)
-freeze["midas"], alpha["midas"] = (
-    (True, 0) if conf.get("freeze", "midas") == "True" else (False, 1)
-)
-freeze["yolo"], alpha["yolo"] = (
-    (True, 0) if conf.get("freeze", "yolo") == "True" else (False, 1)
-)
-
+from utils import *
 
 def test(
     cfg,
@@ -48,6 +19,8 @@ def test(
     model=None,
     dataloader=None,
 ):
+    yolo_props, freeze, alpha = parse_yolo_freeze_cfg(cfg)
+
     # Initialize/load model and set device
     if model is None:
         raise Exception("Model is None.")
@@ -98,7 +71,7 @@ def test(
         if device.type != "cpu"
         else None
     )  # run once
-    # coco91class = coco80_to_coco91_class()
+
     s = ("%20s" + "%10s" * 7) % (
         "Class",
         "Images",

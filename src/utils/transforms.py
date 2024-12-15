@@ -3,6 +3,7 @@ import random
 
 import cv2
 import numpy as np
+import torch.nn.functional as F
 
 
 def letterbox(
@@ -176,3 +177,36 @@ def random_affine(
         targets[:, 1:5] = xy[i]
 
     return img, targets, dp_img
+
+
+def augment_hsv(img, hgain=0.5, sgain=0.5, vgain=0.5):
+    x = np.random.uniform(-1, 1, 3) * [hgain, sgain, vgain] + 1  # random gains
+    img_hsv = (
+        (cv2.cvtColor(img, cv2.COLOR_BGR2HSV) * x)
+        .clip(None, 255)
+        .astype(np.uint8)
+    )
+    np.clip(
+        img_hsv[:, :, 0], None, 179, out=img_hsv[:, :, 0]
+    )  # inplace hue clip (0 - 179 deg)
+    cv2.cvtColor(img_hsv, cv2.COLOR_HSV2BGR, dst=img)  # no return needed
+
+    # Histogram equalization
+    # if random.random() < 0.2:
+    #     for i in range(3):
+    #         img[:, :, i] = cv2.equalizeHist(img[:, :, i])
+
+
+def scale_img(img, ratio=1.0, same_shape=True):  # img(16,3,256,416), r=ratio
+    # scales img(bs,3,y,x) by ratio
+    h, w = img.shape[2:]
+    s = (int(h * ratio), int(w * ratio))  # new size
+    img = F.interpolate(
+        img, size=s, mode="bilinear", align_corners=False
+    )  # resize
+    if not same_shape:  # pad/crop img
+        gs = 64  # (pixels) grid size
+        h, w = [math.ceil(x * ratio / gs) * gs for x in (h, w)]
+    return F.pad(
+        img, [0, w - s[1], 0, h - s[0]], value=0.447
+    )  # value = imagenet mean

@@ -1,26 +1,19 @@
-import glob
 import math
 import os
 import random
-import shutil
-import subprocess
-from pathlib import Path
+import time
+from copy import deepcopy
 
 import cv2
 import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+import torch.backends.cudnn as cudnn
 import torch.nn as nn
 import torch.nn.functional as F
 import torchvision
 from torch import nn
-from tqdm import tqdm
-
-from . import torch_utils  # , google_utils
-
-# from pytorch_ssim import pytorch_ssim
-
 
 matplotlib.rc("font", **{"size": 11})
 
@@ -42,49 +35,137 @@ cv2.setNumThreads(0)
 def init_seeds(seed=0):
     random.seed(seed)
     np.random.seed(seed)
-    torch_utils.init_seeds(seed=seed)
+    torch.manual_seed(seed)
+
+    # Remove randomness (may be slower on Tesla GPUs) # https://pytorch.org/docs/stable/notes/randomness.html
+    if seed == 0:
+        cudnn.deterministic = True
+        cudnn.benchmark = False
 
 
-def load_classes(path):
-    # Loads *.names file at 'path'
-    with open(path, "r") as f:
-        names = f.read().split("\n")
-    return list(
-        filter(None, names)
-    )  # filter removes empty strings (such as last line)
+def select_device(device="", apex=False, batch_size=None):
+    # device = 'cpu' or '0' or '0,1,2,3'
+    cpu_request = device.lower() == "cpu"
+    if device and not cpu_request:  # if device requested other than 'cpu'
+        os.environ["CUDA_VISIBLE_DEVICES"] = device  # set environment variable
+        assert torch.cuda.is_available(), (
+            "CUDA unavailable, invalid device %s requested" % device
+        )  # check availablity
+
+    cuda = False if cpu_request else torch.cuda.is_available()
+    if cuda:
+        c = 1024**2  # bytes to MB
+        ng = torch.cuda.device_count()
+        if (
+            ng > 1 and batch_size
+        ):  # check that batch_size is compatible with device_count
+            assert (
+                batch_size % ng == 0
+            ), "batch-size %g not multiple of GPU count %g" % (batch_size, ng)
+        x = [torch.cuda.get_device_properties(i) for i in range(ng)]
+        s = "Using CUDA " + (
+            "Apex " if apex else ""
+        )  # apex for mixed precision https://github.com/NVIDIA/apex
+        for i in range(0, ng):
+            if i == 1:
+                s = " " * len(s)
+            print(
+                "%sdevice%g _CudaDeviceProperties(name='%s', total_memory=%dMB)"
+                % (s, i, x[i].name, x[i].total_memory / c)
+            )
+    else:
+        print("Using CPU")
+
+    print("")  # skip a line
+    return torch.device("cuda:0" if cuda else "cpu")
 
 
-def labels_to_class_weights(labels, nc=80):
-    # Get class weights (inverse frequency) from training labels
-    if labels[0] is None:  # no labels loaded
-        return torch.Tensor()
-
-    labels = np.concatenate(labels, 0)  # labels.shape = (866643, 5) for COCO
-    classes = labels[:, 0].astype(np.int)  # labels = [class xywh]
-    weights = np.bincount(classes, minlength=nc)  # occurences per class
-
-    # Prepend gridpoint count (for uCE trianing)
-    # gpi = ((320 / 32 * np.array([1, 2, 4])) ** 2 * 3).sum()  # gridpoints per image
-    # weights = np.hstack([gpi * len(labels)  - weights.sum() * 9, weights * 9]) ** 0.5  # prepend gridpoints to start
-
-    weights[weights == 0] = 1  # replace empty bins with 1
-    weights = 1 / weights  # number of targets per class
-    weights /= weights.sum()  # normalize
-    return torch.from_numpy(weights)
+def time_synchronized():
+    torch.cuda.synchronize() if torch.cuda.is_available() else None
+    return time.time()
 
 
-def labels_to_image_weights(labels, nc=80, class_weights=np.ones(80)):
-    # Produces image weights based on class mAPs
-    n = len(labels)
-    class_counts = np.array(
-        [
-            np.bincount(labels[i][:, 0].astype(np.int), minlength=nc)
-            for i in range(n)
-        ]
+def fuse_conv_and_bn(conv, bn):
+    # https://tehnokv.com/posts/fusing-batchnorm-and-conv/
+    with torch.no_grad():
+        # init
+        fusedconv = torch.nn.Conv2d(
+            conv.in_channels,
+            conv.out_channels,
+            kernel_size=conv.kernel_size,
+            stride=conv.stride,
+            padding=conv.padding,
+            bias=True,
+        )
+
+        # prepare filters
+        w_conv = conv.weight.clone().view(conv.out_channels, -1)
+        w_bn = torch.diag(bn.weight.div(torch.sqrt(bn.eps + bn.running_var)))
+        fusedconv.weight.copy_(
+            torch.mm(w_bn, w_conv).view(fusedconv.weight.size())
+        )
+
+        # prepare spatial bias
+        if conv.bias is not None:
+            b_conv = conv.bias
+        else:
+            b_conv = torch.zeros(conv.weight.size(0))
+        b_bn = bn.bias - bn.weight.mul(bn.running_mean).div(
+            torch.sqrt(bn.running_var + bn.eps)
+        )
+        fusedconv.bias.copy_(
+            torch.mm(w_bn, b_conv.reshape(-1, 1)).reshape(-1) + b_bn
+        )
+
+        return fusedconv
+
+
+def model_info(model, verbose=False):
+    # Plots a line-by-line description of a PyTorch model
+    n_p = sum(x.numel() for x in model.parameters())  # number parameters
+    n_g = sum(
+        x.numel() for x in model.parameters() if x.requires_grad
+    )  # number gradients
+    if verbose:
+        print(
+            "%5s %40s %9s %12s %20s %10s %10s"
+            % (
+                "layer",
+                "name",
+                "gradient",
+                "parameters",
+                "shape",
+                "mu",
+                "sigma",
+            )
+        )
+        for i, (name, p) in enumerate(model.named_parameters()):
+            name = name.replace("module_list.", "")
+            print(
+                "%5g %40s %9s %12g %20s %10.3g %10.3g"
+                % (
+                    i,
+                    name,
+                    p.requires_grad,
+                    p.numel(),
+                    list(p.shape),
+                    p.mean(),
+                    p.std(),
+                )
+            )
+
+    try:  # FLOPS
+        from thop import profile
+
+        macs, _ = profile(model, inputs=(torch.zeros(1, 3, 480, 640),))
+        fs = ", %.1f GFLOPS" % (macs / 1e9 * 2)
+    except:
+        fs = ""
+
+    print(
+        "Model Summary: %g layers, %g parameters, %g gradients%s"
+        % (len(list(model.parameters())), n_p, n_g, fs)
     )
-    image_weights = (class_weights.reshape(1, nc) * class_counts).sum(1)
-    # index = random.choices(range(n), weights=image_weights, k=1)  # weight image sample
-    return image_weights
 
 
 def xyxy2xywh(x):
@@ -335,201 +416,6 @@ def wh_iou(wh1, wh2):
     )  # iou = inter / (area1 + area2 - inter)
 
 
-class FocalLoss(nn.Module):
-    # Wraps focal loss around existing loss_fcn(), i.e. criteria = FocalLoss(nn.BCEWithLogitsLoss(), gamma=1.5)
-    def __init__(self, loss_fcn, gamma=1.5, alpha=0.25):
-        super(FocalLoss, self).__init__()
-        self.loss_fcn = loss_fcn  # must be nn.BCEWithLogitsLoss()
-        self.gamma = gamma
-        self.alpha = alpha
-        self.reduction = loss_fcn.reduction
-        self.loss_fcn.reduction = "none"  # required to apply FL to each element
-
-    def forward(self, pred, true):
-        loss = self.loss_fcn(pred, true)
-        # p_t = torch.exp(-loss)
-        # loss *= self.alpha * (1.000001 - p_t) ** self.gamma  # non-zero power for gradient stability
-
-        # TF implementation https://github.com/tensorflow/addons/blob/v0.7.1/tensorflow_addons/losses/focal_loss.py
-        pred_prob = torch.sigmoid(pred)  # prob from logits
-        p_t = true * pred_prob + (1 - true) * (1 - pred_prob)
-        alpha_factor = true * self.alpha + (1 - true) * (1 - self.alpha)
-        modulating_factor = (1.0 - p_t) ** self.gamma
-        loss *= alpha_factor * modulating_factor
-
-        if self.reduction == "mean":
-            return loss.mean()
-        elif self.reduction == "sum":
-            return loss.sum()
-        else:  # 'none'
-            return loss
-
-
-def smooth_BCE(
-    eps=0.1,
-):  # https://github.com/ultralytics/yolov3/issues/238#issuecomment-598028441
-    # return positive, negative label smoothing BCE targets
-    return 1.0 - 0.5 * eps, 0.5 * eps
-
-
-def compute_loss(
-    p, targets, m, m_targets, alpha, model
-):  # predictions, targets, model
-    ft = torch.cuda.FloatTensor if p[0].is_cuda else torch.Tensor
-    lcls, lbox, lobj, ldepth, lpln = ft([0]), ft([0]), ft([0]), ft([0]), ft([0])
-    tcls, tbox, indices, anchor_vec = build_targets(p, targets, model)
-    h = model.hyp  # hyperparameters
-    red = "mean"  # Loss reduction (sum or mean)
-
-    # Define criteria
-    BCEcls = nn.BCEWithLogitsLoss(pos_weight=ft([h["cls_pw"]]), reduction=red)
-    BCEobj = nn.BCEWithLogitsLoss(pos_weight=ft([h["obj_pw"]]), reduction=red)
-
-    # class label smoothing https://arxiv.org/pdf/1902.04103.pdf eqn 3
-    cp, cn = smooth_BCE(eps=0.0)
-
-    # focal loss
-    g = h["fl_gamma"]  # focal loss gamma
-    if g > 0:
-        BCEcls, BCEobj = FocalLoss(BCEcls, g), FocalLoss(BCEobj, g)
-
-    # Compute losses
-    np, ng = 0, 0  # number grid points, targets
-    for i, pi in enumerate(p):  # layer index, layer predictions
-        b, a, gj, gi = indices[i]  # image, anchor, gridy, gridx
-        tobj = torch.zeros_like(pi[..., 0])  # target obj
-        np += tobj.numel()
-
-        # Compute losses
-        nb = len(b)
-        if nb:  # number of targets
-            ng += nb
-            ps = pi[b, a, gj, gi]  # prediction subset corresponding to targets
-            # ps[:, 2:4] = torch.sigmoid(ps[:, 2:4])  # wh power loss (uncomment)
-
-            # GIoU
-            pxy = torch.sigmoid(
-                ps[:, 0:2]
-            )  # pxy = pxy * s - (s - 1) / 2,  s = 1.5  (scale_xy)
-            pwh = torch.exp(ps[:, 2:4]).clamp(max=1e3) * anchor_vec[i]
-            pbox = torch.cat((pxy, pwh), 1)  # predicted box
-            giou = bbox_iou(
-                pbox.t(), tbox[i], x1y1x2y2=False, GIoU=True
-            )  # giou computation
-            lbox += (
-                (1.0 - giou).sum() if red == "sum" else (1.0 - giou).mean()
-            )  # giou loss
-            tobj[b, a, gj, gi] = (
-                1.0 - model.gr
-            ) + model.gr * giou.detach().clamp(0).type(
-                tobj.dtype
-            )  # giou ratio
-
-            if model.nc > 1:  # cls loss (only if multiple classes)
-                t = torch.full_like(ps[:, 5:], cn)  # targets
-                t[range(nb), tcls[i]] = cp
-                lcls += BCEcls(ps[:, 5:], t)  # BCE
-                # lcls += CE(ps[:, 5:], tcls[i])  # CE
-
-            # Append targets to text file
-            # with open('targets.txt', 'a') as file:
-            #     [file.write('%11.5g ' * 4 % tuple(x) + '\n') for x in torch.cat((txy[i], twh[i]), 1)]
-
-        lobj += BCEobj(pi[..., 4], tobj)  # obj loss
-
-    lbox *= h["giou"]
-    lobj *= h["obj"]
-    lcls *= h["cls"]
-    if red == "sum":
-        bs = tobj.shape[0]  # batch size
-        lobj *= 3 / (6300 * bs) * 2  # 3 / np * 2
-        if ng:
-            lcls *= 3 / ng / model.nc
-            lbox *= 3 / ng
-
-    # Depth loss
-    if m.shape != m_targets.shape:
-        m_targets = F.interpolate(m_targets, (m.shape[2], m.shape[3]))
-
-    # ldepth += (1 - pytorch_ssim.ssim(m.float().cuda(), m_targets.float().cuda()))
-    ldepth += nn.MSELoss()(m.float().cuda(), m_targets.float().cuda())
-
-    # print("ldepth", ldepth)
-    # print("lbox", lbox)
-    # print("lobj", lobj)
-    # print("lcls", lcls)
-
-    yolo_loss = alpha["yolo"] * (lbox + lobj + lcls)
-    midas_loss = alpha["midas"] * ldepth
-
-    loss = yolo_loss + midas_loss
-    return loss, torch.cat((lbox, lobj, lcls, ldepth, loss)).detach()
-
-
-def build_targets(p, targets, model):
-    # targets = [image, class, x, y, w, h]
-
-    nt = targets.shape[0]
-    tcls, tbox, indices, av = [], [], [], []
-    reject, use_all_anchors = True, True
-    gain = torch.ones(6, device=targets.device)  # normalized to gridspace gain
-
-    # m = list(model.modules())[-1]
-    # for i in range(m.nl):
-    #    anchors = m.anchors[i]
-    # multi_gpu = type(model) in (nn.parallel.DataParallel, nn.parallel.DistributedDataParallel)
-    for i, j in enumerate([model.yolo1, model.yolo2, model.yolo3]):
-        # get number of grid points and anchor vec for this yolo layer
-        # anchors = model.module.module_list[j].anchor_vec if multi_gpu else model.module_list[j].anchor_vec
-        anchors = j.anchor_vec
-        nc = j.nc
-        # iou of targets-anchors
-        gain[2:] = torch.tensor(p[i].shape)[[3, 2, 3, 2]]  # xyxy gain
-        t, a = targets * gain, []
-        gwh = t[:, 4:6]
-        if nt:
-            iou = wh_iou(
-                anchors, gwh
-            )  # iou(3,n) = wh_iou(anchors(3,2), gwh(n,2))
-
-            if use_all_anchors:
-                na = anchors.shape[0]  # number of anchors
-                a = torch.arange(na).view(-1, 1).repeat(1, nt).view(-1)
-                t = t.repeat(na, 1)
-            else:  # use best anchor only
-                iou, a = iou.max(0)  # best iou and anchor
-
-            # reject anchors below iou_thres (OPTIONAL, increases P, lowers R)
-            if reject:
-                j = (
-                    iou.view(-1) > model.hyp["iou_t"]
-                )  # iou threshold hyperparameter
-                t, a = t[j], a[j]
-
-        # Indices
-        b, c = t[:, :2].long().t()  # target image, class
-        gxy = t[:, 2:4]  # grid x, y
-        gwh = t[:, 4:6]  # grid w, h
-        gi, gj = gxy.long().t()  # grid x, y indices
-        indices.append((b, a, gj, gi))
-
-        # Box
-        gxy -= gxy.floor()  # xy
-        tbox.append(torch.cat((gxy, gwh), 1))  # xywh (grids)
-        av.append(anchors[a])  # anchor vec
-
-        # Class
-        tcls.append(c)
-        if c.shape[0]:  # if any targets
-            assert c.max() < nc, (
-                "Model accepts %g classes labeled from 0-%g, however you labelled a class %g. "
-                "See https://github.com/ultralytics/yolov3/wiki/Train-Custom-Data"
-                % (nc, nc - 1, c.max())
-            )
-
-    return tcls, tbox, indices, av
-
-
 def non_max_suppression(
     prediction,
     conf_thres=0.1,
@@ -701,49 +587,6 @@ def print_mutation(hyp, results, bucket=""):
         os.system("gsutil cp evolve.txt gs://%s" % bucket)  # upload evolve.txt
 
 
-def apply_classifier(x, model, img, im0):
-    # applies a second stage classifier to yolo outputs
-    im0 = [im0] if isinstance(im0, np.ndarray) else im0
-    for i, d in enumerate(x):  # per image
-        if d is not None and len(d):
-            d = d.clone()
-
-            # Reshape and pad cutouts
-            b = xyxy2xywh(d[:, :4])  # boxes
-            b[:, 2:] = b[:, 2:].max(1)[0].unsqueeze(1)  # rectangle to square
-            b[:, 2:] = b[:, 2:] * 1.3 + 30  # pad
-            d[:, :4] = xywh2xyxy(b).long()
-
-            # Rescale boxes from img_size to im0 size
-            scale_coords(img.shape[2:], d[:, :4], im0[i].shape)
-
-            # Classes
-            pred_cls1 = d[:, 5].long()
-            ims = []
-            for j, a in enumerate(d):  # per item
-                cutout = im0[i][int(a[1]) : int(a[3]), int(a[0]) : int(a[2])]
-                im = cv2.resize(cutout, (224, 224))  # BGR
-                # cv2.imwrite('test%i.jpg' % j, cutout)
-
-                im = im[:, :, ::-1].transpose(
-                    2, 0, 1
-                )  # BGR to RGB, to 3x416x416
-                im = np.ascontiguousarray(
-                    im, dtype=np.float32
-                )  # uint8 to float32
-                im /= 255.0  # 0 - 255 to 0.0 - 1.0
-                ims.append(im)
-
-            pred_cls2 = model(torch.Tensor(ims).to(d.device)).argmax(
-                1
-            )  # classifier prediction
-            x[i] = x[i][
-                pred_cls1 == pred_cls2
-            ]  # retain matching class detections
-
-    return x
-
-
 def fitness(x):
     # Returns fitness (for use with results.txt or evolve.txt)
     w = [
@@ -753,119 +596,6 @@ def fitness(x):
         0.00,
     ]  # weights for [P, R, mAP, F1]@0.5 or [P, R, mAP@0.5, mAP@0.5:0.95]
     return (x[:, :4] * w).sum(1)
-
-
-# Plotting functions ---------------------------------------------------------------------------------------------------
-def plot_one_box(x, img, color=None, label=None, line_thickness=None):
-    # Plots one bounding box on image img
-    tl = (
-        line_thickness or round(0.002 * (img.shape[0] + img.shape[1]) / 2) + 1
-    )  # line/font thickness
-    color = color or [random.randint(0, 255) for _ in range(3)]
-    c1, c2 = (int(x[0]), int(x[1])), (int(x[2]), int(x[3]))
-    cv2.rectangle(img, c1, c2, color, thickness=tl)
-    if label:
-        tf = max(tl - 1, 1)  # font thickness
-        t_size = cv2.getTextSize(label, 0, fontScale=tl / 3, thickness=tf)[0]
-        c2 = c1[0] + t_size[0], c1[1] - t_size[1] - 3
-        cv2.rectangle(img, c1, c2, color, -1)  # filled
-        cv2.putText(
-            img,
-            label,
-            (c1[0], c1[1] - 2),
-            0,
-            tl / 3,
-            [225, 255, 255],
-            thickness=tf,
-            lineType=cv2.LINE_AA,
-        )
-
-
-def plot_images(imgs, targets, paths=None, fname="images.png"):
-    # Plots training images overlaid with targets
-    imgs = imgs.cpu().numpy()
-    targets = targets.cpu().numpy()
-    # targets = targets[targets[:, 1] == 21]  # plot only one class
-
-    fig = plt.figure(figsize=(10, 10))
-    bs, _, h, w = imgs.shape  # batch size, _, height, width
-    bs = min(bs, 16)  # limit plot to 16 images
-    ns = np.ceil(bs**0.5)  # number of subplots
-
-    for i in range(bs):
-        boxes = xywh2xyxy(targets[targets[:, 0] == i, 2:6]).T
-        boxes[[0, 2]] *= w
-        boxes[[1, 3]] *= h
-        plt.subplot(int(ns), int(ns), i + 1).imshow(imgs[i].transpose(1, 2, 0))
-        plt.plot(boxes[[0, 2, 2, 0, 0]], boxes[[1, 1, 3, 3, 1]], ".-")
-        plt.axis("off")
-        if paths is not None:
-            s = Path(paths[i]).name
-            plt.title(
-                s[: min(len(s), 40)], fontdict={"size": 8}
-            )  # limit to 40 characters
-    fig.tight_layout()
-    fig.savefig(fname, dpi=200)
-    plt.close()
-
-
-def plot_results(
-    start=0, stop=0, bucket="", id=()
-):  # from utils.utils import *; plot_results()
-    # Plot training 'results*.txt' as seen in https://github.com/ultralytics/yolov3#training
-    fig, ax = plt.subplots(2, 5, figsize=(12, 6))
-    ax = ax.ravel()
-    s = [
-        "GIoU",
-        "Objectness",
-        "Classification",
-        "Precision",
-        "Recall",
-        "val GIoU",
-        "val Objectness",
-        "val Classification",
-        "mAP@0.5",
-        "F1",
-    ]
-    if bucket:
-        os.system("rm -rf storage.googleapis.com")
-        files = [
-            "https://storage.googleapis.com/%s/results%g.txt" % (bucket, x)
-            for x in id
-        ]
-    else:
-        files = glob.glob("results*.txt") + glob.glob(
-            "../../Downloads/results*.txt"
-        )
-    for f in sorted(files):
-        try:
-            results = np.loadtxt(
-                f, usecols=[2, 3, 4, 8, 9, 12, 13, 14, 10, 11], ndmin=2
-            ).T
-            n = results.shape[1]  # number of rows
-            x = range(start, min(stop, n) if stop else n)
-            for i in range(10):
-                y = results[i, x]
-                if i in [0, 1, 2, 5, 6, 7]:
-                    y[y == 0] = np.nan  # dont show zero loss values
-                    # y /= y[0]  # normalize
-                ax[i].plot(
-                    x,
-                    y,
-                    marker=".",
-                    label=Path(f).stem,
-                    linewidth=2,
-                    markersize=8,
-                )
-                ax[i].set_title(s[i])
-                if i in [5, 6, 7]:  # share train and val loss y axes
-                    ax[i].get_shared_y_axes().join(ax[i], ax[i - 5])
-        except:
-            print("Warning: Plotting error for %s, skipping file" % f)
-
-    fig.tight_layout()
-    ax[1].legend()
-    fig.savefig("results.png", dpi=200)
 
 
 def write_depth(path, depth, bits=1):
