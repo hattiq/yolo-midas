@@ -1,6 +1,4 @@
 runs/**
 data/customdata/**
 **.pt
-task.txt
-**.png
 **/__pycache__/**
