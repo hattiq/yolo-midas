@@ -8,9 +8,9 @@ The model integrates:
 - **[MiDaS](https://github.com/isl-org/MiDaS)** for generating dense monocular depth maps, which provide a pixel-wise depth estimation of the scene.
 
 
-### **Key Features**
+#### **Details**
 1. **Unified Backbone:** A single **[ResNeXt101](https://arxiv.org/abs/1611.05431) backbone** is used for feature extraction, shared by both YOLOv3 and MiDaS branches. This reduces computation overhead and enables faster inference.
-Specifically uses **ResNeXt101_32x8d_wsl (Weakly Supervised Learning)** backbone, pre-trained on Instagram data. This backbone provides robust feature extraction for both object detection and depth estimation tasks.
+Specifically uses **ResNeXt101_32x8d_wsl (Weakly Supervised Learning)** backbone, pre-trained on Instagram data. This backbone provides robust feature extraction for both object detection and depth estimation tasks. 
 
 2. **Task-Specific Heads:**
    - **YOLOv3 Head:** For object detection tasks such as bounding box regression, object classification, and confidence score prediction.
