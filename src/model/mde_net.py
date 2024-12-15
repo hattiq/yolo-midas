@@ -2,8 +2,7 @@ import torch
 from torch import nn
 from model.midas_blocks import FeatureFusionBlock, Interpolate, _make_encoder
 from model.yololayer import YOLOLayer
-from utils.parse_config import *
-from utils import torch_utils
+from utils import *
 
 ONNX_EXPORT = False
 
@@ -164,8 +163,8 @@ class MDENet(nn.Module):
             y1 = []
             y2 = []
             for i, xi in enumerate((x,
-                                    torch_utils.scale_img(x.flip(3), s[0], same_shape=False),  # flip-lr and scale
-                                    torch_utils.scale_img(x, s[1], same_shape=False),  # scale
+                                    scale_img(x.flip(3), s[0], same_shape=False),  # flip-lr and scale
+                                    scale_img(x, s[1], same_shape=False),  # scale
                                     )):
                 # cv2.imwrite('img%g.jpg' % i, 255 * xi[0].numpy().transpose((1, 2, 0))[:, :, ::-1])
                 out = self.forward_net(xi)
@@ -201,8 +200,8 @@ class MDENet(nn.Module):
             nb = x.shape[0]  # batch size
             s = [0.83, 0.67]  # scales
             x = torch.cat((x,
-                           torch_utils.scale_img(x.flip(3), s[0]),  # flip-lr and scale
-                           torch_utils.scale_img(x, s[1]),  # scale
+                           scale_img(x.flip(3), s[0]),  # flip-lr and scale
+                           scale_img(x, s[1]),  # scale
                            ), 0)
             
         midas_out, yolo_out = self.run_batch(x)
@@ -276,7 +275,7 @@ class MDENet(nn.Module):
                     if isinstance(b, nn.modules.batchnorm.BatchNorm2d):
                         # fuse this bn layer with the previous conv2d layer
                         conv = a[i - 1]
-                        fused = torch_utils.fuse_conv_and_bn(conv, b)
+                        fused = fuse_conv_and_bn(conv, b)
                         a = nn.Sequential(fused, *list(a.children())[i + 1:])
                         break
             fused_list.append(a)
@@ -284,7 +283,7 @@ class MDENet(nn.Module):
         self.info() if not ONNX_EXPORT else None  # yolov3-spp reduced from 225 to 152 layers
 
     def info(self, verbose=False):
-        torch_utils.model_info(self, verbose)
+        model_info(self, verbose)
     
     def load(self, path):
         """Load model from file.

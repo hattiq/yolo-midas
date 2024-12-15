@@ -14,7 +14,7 @@ def detect(save_img=False):
     webcam = source == '0' or source.startswith('rtsp') or source.startswith('http') or source.endswith('.txt')
 
     # Initialize
-    device = torch_utils.select_device(device='cpu' if ONNX_EXPORT else opt.device)
+    device = select_device(device='cpu' if ONNX_EXPORT else opt.device)
     if os.path.exists(out):
         shutil.rmtree(out)  # delete output folder
     os.makedirs(out)  # make new output folder
@@ -37,7 +37,7 @@ def detect(save_img=False):
     # Second-stage classifier
     classify = False
     if classify:
-        modelc = torch_utils.load_classifier(name='resnet101', n=2)  # initialize
+        modelc = load_classifier(name='resnet101', n=2)  # initialize
         modelc.load_state_dict(torch.load('weights/resnet101.pt', map_location=device)['model'])  # load weights
         modelc.to(device).eval()
     """
@@ -90,7 +90,7 @@ def detect(save_img=False):
             img = img.unsqueeze(0)
 
         # Inference
-        t1 = torch_utils.time_synchronized()
+        t1 = time_synchronized()
         depth_pred, pred, _ = model(img, augment=False)
         """
         predict = model(img, augment=False)
@@ -98,7 +98,7 @@ def detect(save_img=False):
         print("shape1", predict[1].shape)
         print("shape2", predict[2].shape)
         """
-        t2 = torch_utils.time_synchronized()
+        t2 = time_synchronized()
 
         # to float
         if half:

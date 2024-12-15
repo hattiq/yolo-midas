@@ -5,7 +5,7 @@ import torch.distributed as dist
 import torch.optim as optim
 import torch.optim.lr_scheduler as lr_scheduler
 
-from . import test  # import test.py to get mAP after each epoch
+from test import test  # import test.py to get mAP after each epoch
 from model.mde_net import MDENet
 from utils import *
 
@@ -253,7 +253,7 @@ def train():
     print('Image sizes %g - %g train, %g test' % (imgsz_min, imgsz_max, imgsz_test))
     print('Using %g dataloader workers' % nw)
     print('Starting training for %g epochs...' % epochs)
-    for epoch in range(start_epoch, epochs):  # epoch ------------------------------------------------------------------
+    for epoch in range(start_epoch, epochs):  # epoch 
         model.train()
 
         # Update image weights (optional)
@@ -264,8 +264,9 @@ def train():
 
         mloss = torch.zeros(5).to(device)  # mean losses
         print(('\n' + '%10s' * 9) % ('Epoch', 'gpu_mem', 'GIoU', 'obj', 'cls', 'l_depth', 'total', 'targets', 'img_size'))
+        # __import__('ipdb').set_trace()
         pbar = tqdm(enumerate(dataloader), total=nb)  # progress bar
-        for i, (imgs, targets, paths, _, dp_imgs) in pbar:  # batch -------------------------------------------------------------
+        for i, (imgs, targets, paths, _, dp_imgs) in pbar:  # batch
             #print("imgs:", len(imgs))
             #print("targets:", targets)
             #print("paths:", paths)
@@ -361,7 +362,7 @@ def train():
         final_epoch = epoch + 1 == epochs
         if not opt.notest or final_epoch:  # Calculate mAP
             is_coco = any([x in data for x in ['coco.data', 'coco2014.data', 'coco2017.data']]) and model.nc == 80
-            results, maps = test.test(cfg,
+            results, maps = test(cfg,
                                       data,
                                       batch_size=batch_size,
                                       img_size=imgsz_test,

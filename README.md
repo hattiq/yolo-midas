@@ -1,10 +1,32 @@
-# yolo-midas for Autonomous Navigation
+# YOLO-MiDaS for Autonomous Navigation
 
-Combine YOLOv3 with MiDaS with a single Resnext101 backbone. The idea is to use a single feature extractor for two different applications, in this case, Object detection and Monocular Depth Estimation.
+This repository combines YOLOv3 for object detection and MiDaS for monocular depth estimation into a single model using a ResNeXt101 backbone. The idea is to use shared feature extractor for efficient real-time performance for autonomous navigation applications.
 
-Please read the article to see more details https://sarvan0506.medium.com/yolo-v3-and-midas-from-a-single-resnext101-backbone-8ba42948bf65
+## **Model Architecture**
+The model integrates:
+- **[YOLOv3](https://arxiv.org/abs/1804.02767)** for detecting objects in images, with a focus on robust bounding box predictions.
+- **[MiDaS](https://github.com/isl-org/MiDaS)** for generating dense monocular depth maps, which provide a pixel-wise depth estimation of the scene.
 
-![structure](assets/structure.PNG)
+
+### **Key Features**
+1. **Unified Backbone:** A single **[ResNeXt101](https://arxiv.org/abs/1611.05431) backbone** is used for feature extraction, shared by both YOLOv3 and MiDaS branches. This reduces computation overhead and enables faster inference.
+Specifically uses **ResNeXt101_32x8d_wsl (Weakly Supervised Learning)** backbone, pre-trained on Instagram data. This backbone provides robust feature extraction for both object detection and depth estimation tasks.
+
+2. **Task-Specific Heads:**
+   - **YOLOv3 Head:** For object detection tasks such as bounding box regression, object classification, and confidence score prediction.
+   - **MiDaS Head:** For predicting depth maps from the extracted features.
+
+
+
+
+
+
+
+
+
+
+
+![structure](docs/assets/structure.PNG)
 
 The model architecture change can be seen in `model/mde_net.py`
 
@@ -33,4 +55,8 @@ The inferred images will be stored inside `output` folder
 
 ## Inference Result Sample
 
-![result](assets/results.png)
+![result](docs/assets/results.png)
+
+
+### Refs
+-  https://sarvan0506.medium.com/yolo-v3-and-midas-from-a-single-resnext101-backbone-8ba42948bf65

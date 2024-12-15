@@ -19,6 +19,42 @@ def test(
     model=None,
     dataloader=None,
 ):
+    """
+    Perform testing and evaluation of a YOLO-based object detection model.
+
+    Args:
+        cfg (str): Path to the model configuration file (e.g., .yaml or .cfg format).
+        data (str): Path to the dataset configuration file (e.g., .yaml) defining training, validation, and test datasets.
+        weights (str, optional): Path to the model weights file. Defaults to None, indicating the use of randomly initialized weights or a preloaded model.
+        batch_size (int, optional): Batch size to use during testing. Defaults to 16.
+        img_size (int, optional): Input image size (height and width) for testing. Defaults to 416.
+        conf_thres (float, optional): Confidence threshold for object detection. Detections with scores below this threshold are discarded. Defaults to 0.001.
+        iou_thres (float, optional): Intersection over Union (IoU) threshold for Non-Maximum Suppression (NMS). Defaults to 0.6.
+        save_json (bool, optional): Whether to save test results in COCO JSON format for evaluation. Defaults to False.
+        single_cls (bool, optional): If True, treats all classes as a single class for evaluation. Useful for binary or single-class datasets. Defaults to False.
+        augment (bool, optional): If True, performs augmented inference (e.g., multi-scale testing). Defaults to False.
+        model (torch.nn.Module, optional): Preloaded PyTorch model. If provided, bypasses loading from `cfg` and `weights`. Defaults to None.
+        dataloader (torch.utils.data.DataLoader, optional): Preloaded DataLoader for testing. If provided, bypasses loading data from the `data` argument. Defaults to None.
+
+    Returns:
+        tuple: A tuple containing:
+            - metrics (tuple): A tuple with the following metrics:
+                - mp (float): Mean precision across all classes.
+                - mr (float): Mean recall across all classes.
+                - map (float): Mean Average Precision (mAP) at IoU threshold 0.5.
+                - mf1 (float): Mean F1 score across all classes.
+                - loss (list): A list of average test losses, including:
+                    - classification loss,
+                    - objectness loss, and
+                    - bounding box regression loss.
+            - maps (list): Class-wise mAP values at IoU threshold 0.5 for each class.
+    """
+
+
+
+
+
+
     yolo_props, freeze, alpha = parse_yolo_freeze_cfg(cfg)
 
     # Initialize/load model and set device
@@ -37,6 +73,7 @@ def test(
         device
     )  # iou vector for mAP@0.5:0.95
     iouv = iouv[0].view(1)  # comment for mAP@0.5:0.95
+    __import__('ipdb').set_trace()
     niou = iouv.numel()
 
     # Dataloader
@@ -114,7 +151,7 @@ def test(
         # Disable gradients
         with torch.no_grad():
             # Run model
-            t = torch_utils.time_synchronized()
+            t = time_synchronized()
             midas_out, yolo_inf_out, yolo_train_out = model(
                 imgs, augment=augment
             )  # inference and training outputs
@@ -127,7 +164,7 @@ def test(
             print("yolo_out_2", yolo_train_out[2].shape)
             """
 
-            t0 += torch_utils.time_synchronized() - t
+            t0 += time_synchronized() - t
             # Compute loss
             if hasattr(model, "hyp"):  # if model has loss hyperparameters
                 loss += compute_loss(
@@ -137,11 +174,11 @@ def test(
                 ]  # GIoU, obj, cls, ldepth
             # print("test loss", loss)
             # Run NMS
-            t = torch_utils.time_synchronized()
+            t = time_synchronized()
             output = non_max_suppression(
                 yolo_inf_out, conf_thres=conf_thres, iou_thres=iou_thres
             )  # nms
-            t1 += torch_utils.time_synchronized() - t
+            t1 += time_synchronized() - t
 
         # Statistics per image
         for si, pred in enumerate(output):
