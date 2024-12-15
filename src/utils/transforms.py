@@ -66,7 +66,6 @@ def letterbox(
 def random_affine(
     img,
     dp_img,
-    pln_img,
     targets=(),
     degrees=10,
     translate=0.1,
@@ -127,8 +126,6 @@ def random_affine(
         )
         # dp_img = cv2.warpAffine(dp_img, M[:2], dsize=(width, height),
         #               flags=cv2.INTER_LINEAR, borderValue=(114, 114, 114))
-        # pln_img = cv2.warpAffine(pln_img, M[:2], dsize=(width, height),
-        #               flags=cv2.INTER_LINEAR, borderValue=(114, 114, 114))
 
     # Transform label coordinates
     n = len(targets)
@@ -178,4 +175,4 @@ def random_affine(
         targets = targets[i]
         targets[:, 1:5] = xy[i]
 
-    return img, targets, dp_img, pln_img
+    return img, targets, dp_img

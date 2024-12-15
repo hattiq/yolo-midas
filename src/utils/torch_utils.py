@@ -60,23 +60,6 @@ def time_synchronized():
     return time.time()
 
 
-def initialize_weights(model):
-    for m in model.modules():
-        t = type(m)
-        if t is nn.Conv2d:
-            pass  # nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
-        elif t is nn.BatchNorm2d:
-            m.eps = 1e-4
-            m.momentum = 0.03
-        elif t in [nn.LeakyReLU, nn.ReLU, nn.ReLU6]:
-            m.inplace = True
-
-
-def find_modules(model, mclass=nn.Conv2d):
-    # finds layer indices matching module class 'mclass'
-    return [i for i, m in enumerate(model.module_list) if isinstance(m, mclass)]
-
-
 def fuse_conv_and_bn(conv, bn):
     # https://tehnokv.com/posts/fusing-batchnorm-and-conv/
     with torch.no_grad():
@@ -173,7 +156,6 @@ def scale_img(img, ratio=1.0, same_shape=True):  # img(16,3,256,416), r=ratio
     return F.pad(
         img, [0, w - s[1], 0, h - s[0]], value=0.447
     )  # value = imagenet mean
-
 
 class ModelEMA:
     """

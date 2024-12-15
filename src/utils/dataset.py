@@ -101,15 +101,6 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
             )
             for x in self.img_files
         ]
-        # print("self.depth_files", self.depth_files[:2])
-        # Planer targets
-        self.planer_files = [
-            x.replace("images/", "planer_images/").replace(
-                os.path.splitext(x)[-1], "_segmentation_0_final.png"
-            )
-            for x in self.img_files
-        ]
-        # print("self.planer_files", self.planer_files[:2])
 
         # Rectangular Training  https://github.com/ultralytics/yolov3/issues/232
         if self.rect:
@@ -132,7 +123,6 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
             i = ar.argsort()
             self.img_files = [self.img_files[i] for i in i]
             self.depth_files = [self.depth_files[i] for i in i]
-            self.planer_files = [self.planer_files[i] for i in i]
             self.label_files = [self.label_files[i] for i in i]
             self.shapes = s[i]  # wh
             ar = ar[i]
@@ -154,7 +144,6 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         # Preload labels (required for weighted CE training)
         self.imgs = [None] * n
         self.dpth_imgs = [None] * n
-        self.plane_imgs = [None] * n
         self.labels = [None] * n
         if cache_labels or image_weights:  # cache labels for faster training
             self.labels = [np.zeros((0, 5))] * n
@@ -273,13 +262,11 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                     self.img_hw0[i],
                     self.img_hw[i],
                     self.dpth_imgs[i],
-                    self.plane_imgs[i],
                 ) = self.load_image(
                     i
-                )  # img, hw_original, hw_resized, depth_image, plane_image
+                )  # img, hw_original, hw_resized, depth_image
                 gb += self.imgs[i].nbytes
                 gb += self.dpth_imgs[i].nbytes
-                gb += self.plane_imgs[i].nbytes
                 pbar.desc = "Caching images (%.1fGB)" % (gb / 1e9)
             # except:
             #     pass
@@ -311,14 +298,9 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         hyp = self.hyp
         if self.mosaic:
             # Load mosaic
-            img, labels, dp_img, pln_img = load_mosaic(self, index)
+            img, labels, dp_img = load_mosaic(self, index)
             dp_img = cv2.resize(
                 dp_img,
-                (self.img_size, self.img_size),
-                interpolation=cv2.INTER_NEAREST,
-            )
-            pln_img = cv2.resize(
-                pln_img,
                 (self.img_size, self.img_size),
                 interpolation=cv2.INTER_NEAREST,
             )
@@ -327,7 +309,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         else:
 
             # Load image
-            img, (h0, w0), (h, w), dp_img, pln_img = self.load_image(index)
+            img, (h0, w0), (h, w), dp_img = self.load_image(index)
 
             # Letterbox
             shape = (
@@ -345,11 +327,6 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
             )
             dp_img = cv2.resize(
                 dp_img,
-                (self.img_size, self.img_size),
-                interpolation=cv2.INTER_NEAREST,
-            )
-            pln_img = cv2.resize(
-                pln_img,
                 (self.img_size, self.img_size),
                 interpolation=cv2.INTER_NEAREST,
             )
@@ -375,10 +352,9 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
             # Augment imagespace
 
             if not self.mosaic:
-                img, labels, dp_img, pln_img = random_affine(
+                img, labels, dp_img = random_affine(
                     img,
                     dp_img,
-                    pln_img,
                     labels,
                     degrees=hyp["degrees"],
                     translate=hyp["translate"],
@@ -392,12 +368,6 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
             )
             augment_hsv(
                 dp_img,
-                hgain=hyp["hsv_h"],
-                sgain=hyp["hsv_s"],
-                vgain=hyp["hsv_v"],
-            )
-            augment_hsv(
-                pln_img,
                 hgain=hyp["hsv_h"],
                 sgain=hyp["hsv_s"],
                 vgain=hyp["hsv_v"],
@@ -422,7 +392,6 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
             if lr_flip and random.random() < 0.5:
                 img = np.fliplr(img)
                 # dp_img = np.fliplr(dp_img)
-                # pln_img = np.fliplr(pln_img)
                 if nL:
                     labels[:, 1] = 1 - labels[:, 1]
 
@@ -444,10 +413,6 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
             1, dp_img.shape[0], dp_img.shape[1]
         )  # BGR to grey, to 1x416x416 depth
         dp_img = np.ascontiguousarray(dp_img)
-        pln_img = pln_img[:, :, ::-1].transpose(
-            2, 0, 1
-        )  # BGR to RGB, to 3x416x416 planes
-        pln_img = np.ascontiguousarray(pln_img)
 
         return (
             torch.from_numpy(img),
@@ -455,12 +420,11 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
             self.img_files[index],
             shapes,
             torch.from_numpy(dp_img),
-            torch.from_numpy(pln_img),
         )
 
     @staticmethod
     def collate_fn(batch):
-        img, label, path, shapes, dp_img, pln_img = zip(*batch)  # transposed
+        img, label, path, shapes, dp_img = zip(*batch)  # transposed
         for i, l in enumerate(label):
             l[:, 0] = i  # add target image index for build_targets()
         return (
@@ -469,7 +433,6 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
             path,
             shapes,
             torch.stack(dp_img, 0),
-            torch.stack(pln_img, 0),
         )
 
     def load_image(self, index):
@@ -478,19 +441,14 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         if img is None:  # not cached
             img_path = self.img_files[index]
             dpth_path = self.depth_files[index]
-            plane_path = self.planer_files[index]
             img = cv2.imread(img_path)  # BGR
             dpth_img = cv2.imread(dpth_path)  # BGR
-            plane_img = cv2.imread(plane_path)  # BGR
 
             assert img is not None, (
                 "I cv2.imread(img_path)  # BGRmage Not Found " + img_path
             )
             assert dpth_img is not None, (
                 "I cv2.imread(dpth_path)  # BGRmage Not Found " + dpth_path
-            )
-            assert plane_img is not None, (
-                "I cv2.imread(plane_path)  # BGRmage Not Found " + plane_path
             )
 
             h0, w0 = img.shape[:2]  # orig hw
@@ -512,16 +470,14 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                 (h0, w0),
                 img.shape[:2],
                 dpth_img,
-                plane_img,
-            )  # img, hw_original, hw_resized, depth_image, planer_image
+            )  # img, hw_original, hw_resized, depth_image
         else:
             return (
                 self.imgs[index],
                 self.img_hw0[index],
                 self.img_hw[index],
                 self.dpth_imgs[index],
-                self.plane_imgs[index],
-            )  # img, hw_original, hw_resized, depth_image, planer_image
+            )  # img, hw_original, hw_resized, depth_image
 
 
 def augment_hsv(img, hgain=0.5, sgain=0.5, vgain=0.5):
@@ -556,7 +512,7 @@ def load_mosaic(self, index):
     ]  # 3 additional image indices
     for i, index in enumerate(indices):
         # Load image
-        img, _, (h, w), dp_img, pln_img = self.load_image(index)
+        img, _, (h, w), dp_img = self.load_image(index)
 
         # place img in img4
         if i == 0:  # top left
@@ -564,7 +520,6 @@ def load_mosaic(self, index):
                 (s * 2, s * 2, img.shape[2]), 114, dtype=np.uint8
             )  # base image with 4 tiles
             # dp_img4 = np.full((s * 2, s * 2, dp_img.shape[2]), 114, dtype=np.uint8)  # base depth image with 4 tiles
-            # pln_img4 = np.full((s * 2, s * 2, pln_img.shape[2]), 114, dtype=np.uint8)  # base plane image with 4 tiles
             x1a, y1a, x2a, y2a = (
                 max(xc - w, 0),
                 max(yc - h, 0),
@@ -596,7 +551,6 @@ def load_mosaic(self, index):
             y1b:y2b, x1b:x2b
         ]  # img4[ymin:ymax, xmin:xmax]
         # dp_img4[y1a:y2a, x1a:x2a] = dp_img[y1b:y2b, x1b:x2b]  # img4[ymin:ymax, xmin:xmax] depth
-        # pln_img4[y1a:y2a, x1a:x2a] = pln_img[y1b:y2b, x1b:x2b]  # img4[ymin:ymax, xmin:xmax] plane
         padw = x1a - x1b
         padh = y1a - y1b
 
@@ -632,10 +586,9 @@ def load_mosaic(self, index):
 
     # Augment
     # img4 = img4[s // 2: int(s * 1.5), s // 2:int(s * 1.5)]  # center crop (WARNING, requires box pruning)
-    img4, labels4, dp_img, pln_img = random_affine(
+    img4, labels4, dp_img = random_affine(
         img4,
         dp_img,
-        pln_img,
         labels4,
         degrees=self.hyp["degrees"] * 1,
         translate=self.hyp["translate"] * 1,
@@ -644,167 +597,4 @@ def load_mosaic(self, index):
         border=-s // 2,
     )  # border to remove
 
-    return img4, labels4, dp_img, pln_img
-
-
-def letterbox(
-    img,
-    new_shape=(416, 416),
-    color=(114, 114, 114),
-    auto=True,
-    scaleFill=False,
-    scaleup=True,
-):
-
-    # Resize image to a 32-pixel-multiple rectangle https://github.com/ultralytics/yolov3/issues/232
-    shape = img.shape[:2]  # current shape [height, width]
-    if isinstance(new_shape, int):
-        new_shape = (new_shape, new_shape)
-
-    # Scale ratio (new / old)
-    r = max(new_shape) / max(shape)
-    if not scaleup:  # only scale down, do not scale up (for better test mAP)
-        r = min(r, 1.0)
-
-    # Compute padding
-    ratio = r, r  # width, height ratios
-    new_unpad = int(round(shape[1] * r)), int(round(shape[0] * r))
-    dw, dh = (
-        new_shape[1] - new_unpad[0],
-        new_shape[0] - new_unpad[1],
-    )  # wh padding
-    if auto:  # minimum rectangle
-        dw, dh = np.mod(dw, 64), np.mod(dh, 64)  # wh padding
-    elif scaleFill:  # stretch
-        dw, dh = 0.0, 0.0
-        new_unpad = new_shape
-        ratio = (
-            new_shape[0] / shape[1],
-            new_shape[1] / shape[0],
-        )  # width, height ratios
-
-    dw /= 2  # divide padding into 2 sides
-    dh /= 2
-
-    # print("shape", shape)
-    # print("new_unpad", new_unpad)
-
-    try:
-        if shape[::-1] != new_unpad:  # resize
-            img = cv2.resize(img, new_unpad, interpolation=cv2.INTER_LINEAR)
-    except ValueError:
-        # print("shape", shape)
-        # print("new_unpad", new_unpad)
-        pass
-
-    top, bottom = int(round(dh - 0.1)), int(round(dh + 0.1))
-    left, right = int(round(dw - 0.1)), int(round(dw + 0.1))
-    img = cv2.copyMakeBorder(
-        img, top, bottom, left, right, cv2.BORDER_CONSTANT, value=color
-    )  # add border
-    return img, ratio, (dw, dh)
-
-
-def random_affine(
-    img,
-    dp_img,
-    pln_img,
-    targets=(),
-    degrees=10,
-    translate=0.1,
-    scale=0.1,
-    shear=10,
-    border=0,
-):
-    # torchvision.transforms.RandomAffine(degrees=(-10, 10), translate=(.1, .1), scale=(.9, 1.1), shear=(-10, 10))
-    # https://medium.com/uruvideo/dataset-augmentation-with-random-homographies-a8f4b44830d4
-
-    if targets is None:  # targets = [cls, xyxy]
-        targets = []
-    height = img.shape[0] + border * 2
-    width = img.shape[1] + border * 2
-
-    # Rotation and Scale
-    R = np.eye(3)
-    a = random.uniform(-degrees, degrees)
-    # a += random.choice([-180, -90, 0, 90])  # add 90deg rotations to small rotations
-    s = random.uniform(1 - scale, 1 + scale)
-    R[:2] = cv2.getRotationMatrix2D(
-        angle=a, center=(img.shape[1] / 2, img.shape[0] / 2), scale=s
-    )
-
-    # Translation
-    T = np.eye(3)
-    T[0, 2] = (
-        random.uniform(-translate, translate) * img.shape[0] + border
-    )  # x translation (pixels)
-    T[1, 2] = (
-        random.uniform(-translate, translate) * img.shape[1] + border
-    )  # y translation (pixels)
-
-    # Shear
-    S = np.eye(3)
-    S[0, 1] = math.tan(
-        random.uniform(-shear, shear) * math.pi / 180
-    )  # x shear (deg)
-    S[1, 0] = math.tan(
-        random.uniform(-shear, shear) * math.pi / 180
-    )  # y shear (deg)
-
-    # Combined rotation matrix
-    M = S @ T @ R  # ORDER IS IMPORTANT HERE!!
-    if (border != 0) or (M != np.eye(3)).any():  # image changed
-        img = cv2.warpAffine(
-            img,
-            M[:2],
-            dsize=(width, height),
-            flags=cv2.INTER_LINEAR,
-            borderValue=(114, 114, 114),
-        )
-        # dp_img = cv2.warpAffine(dp_img, M[:2], dsize=(width, height), flags=cv2.INTER_LINEAR, borderValue=(114, 114, 114))
-        # pln_img = cv2.warpAffine(pln_img, M[:2], dsize=(width, height), flags=cv2.INTER_LINEAR, borderValue=(114, 114, 114))
-
-    # Transform label coordinates
-    n = len(targets)
-    if n:
-        # warp points
-        xy = np.ones((n * 4, 3))
-        xy[:, :2] = targets[:, [1, 2, 3, 4, 1, 4, 3, 2]].reshape(
-            n * 4, 2
-        )  # x1y1, x2y2, x1y2, x2y1
-        xy = (xy @ M.T)[:, :2].reshape(n, 8)
-
-        # create new boxes
-        x = xy[:, [0, 2, 4, 6]]
-        y = xy[:, [1, 3, 5, 7]]
-        xy = (
-            np.concatenate((x.min(1), y.min(1), x.max(1), y.max(1)))
-            .reshape(4, n)
-            .T
-        )
-
-        # # apply angle-based reduction of bounding boxes
-        # radians = a * math.pi / 180
-        # reduction = max(abs(math.sin(radians)), abs(math.cos(radians))) ** 0.5
-        # x = (xy[:, 2] + xy[:, 0]) / 2
-        # y = (xy[:, 3] + xy[:, 1]) / 2
-        # w = (xy[:, 2] - xy[:, 0]) * reduction
-        # h = (xy[:, 3] - xy[:, 1]) * reduction
-        # xy = np.concatenate((x - w / 2, y - h / 2, x + w / 2, y + h / 2)).reshape(4, n).T
-
-        # reject warped points outside of image
-        xy[:, [0, 2]] = xy[:, [0, 2]].clip(0, width)
-        xy[:, [1, 3]] = xy[:, [1, 3]].clip(0, height)
-        w = xy[:, 2] - xy[:, 0]
-        h = xy[:, 3] - xy[:, 1]
-        area = w * h
-        area0 = (targets[:, 3] - targets[:, 1]) * (
-            targets[:, 4] - targets[:, 2]
-        )
-        ar = np.maximum(w / (h + 1e-16), h / (w + 1e-16))  # aspect ratio
-        i = (w > 4) & (h > 4) & (area / (area0 + 1e-16) > 0.2) & (ar < 10)
-
-        targets = targets[i]
-        targets[:, 1:5] = xy[i]
-
-    return img, targets, dp_img, pln_img
+    return img4, labels4, dp_img

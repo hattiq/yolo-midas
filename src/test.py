@@ -9,8 +9,8 @@ from torch.utils.data import DataLoader
 from model.mde_net import *
 from utils.dataset import *
 
-from .parse_config import *
-from .utils import *
+from .utils.parse_config import *
+from .utils.utils import *
 
 conf = cp.RawConfigParser()
 conf.read("cfg/mde.cfg")
@@ -31,9 +31,6 @@ freeze["midas"], alpha["midas"] = (
 )
 freeze["yolo"], alpha["yolo"] = (
     (True, 0) if conf.get("freeze", "yolo") == "True" else (False, 1)
-)
-freeze["planercnn"], alpha["planercnn"] = (
-    (True, 0) if conf.get("freeze", "planercnn") == "True" else (False, 1)
 )
 
 
@@ -126,7 +123,7 @@ def test(
     )
     loss = torch.zeros(4, device=device)
     jdict, stats, ap, ap_class = [], [], [], []
-    for batch_i, (imgs, targets, paths, shapes, dp_imgs, pln_imgs) in enumerate(
+    for batch_i, (imgs, targets, paths, shapes, dp_imgs) in enumerate(
         tqdm(dataloader, desc=s)
     ):
         imgs = (
