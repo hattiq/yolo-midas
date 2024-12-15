@@ -101,7 +101,7 @@ def test(
         if device.type != "cpu"
         else None
     )  # run once
-    coco91class = coco80_to_coco91_class()
+    # coco91class = coco80_to_coco91_class()
     s = ("%20s" + "%10s" * 7) % (
         "Class",
         "Images",
@@ -209,15 +209,15 @@ def test(
                 )  # to original shape
                 box = xyxy2xywh(box)  # xywh
                 box[:, :2] -= box[:, 2:] / 2  # xy center to top-left corner
-                for p, b in zip(pred.tolist(), box.tolist()):
-                    jdict.append(
-                        {
-                            "image_id": image_id,
-                            "category_id": coco91class[int(p[5])],
-                            "bbox": [round(x, 3) for x in b],
-                            "score": round(p[4], 5),
-                        }
-                    )
+                # for p, b in zip(pred.tolist(), box.tolist()):
+                #     jdict.append(
+                #         {
+                #             "image_id": image_id,
+                #             "category_id": coco91class[int(p[5])],
+                #             "bbox": [round(x, 3) for x in b],
+                #             "score": round(p[4], 5),
+                #         }
+                #     )
 
             # Assign all predictions as incorrect
             correct = torch.zeros(

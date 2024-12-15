@@ -93,8 +93,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
             )
             for x in self.img_files
         ]
-        # print("self.label_files", self.label_files[:2])
-        # print("self.label_files count", len(self.label_files))
+
         # Depth targets
         self.depth_files = [
             x.replace("images/", "depth_images/").replace(
