@@ -24,7 +24,6 @@ conda activate yolo-midas
 pip install -r requirements.txt
 ```
 
-
 ### Inference with detect.py
 
 > Weights are not provided for the model, needs training first.
@@ -44,7 +43,7 @@ Sample output:
 
 ### Training
 
-The model is trained on Construction Safety Gear Data which can be found here https://github.com/sarvan0506/EVA5-Vision-Squad/tree/Saravana/14_Construction_Safety_Dataset. If training need to done on custom datasets refer the data preparation steps mentioned in the page.
+The model is trained on Construction Safety Gear Data which can be found here [Construction Safety Dataset](https://github.com/sarvan0506/EVA5-Vision-Squad/tree/Saravana/14_Construction_Safety_Dataset). If training need to done on custom datasets refer the data preparation steps mentioned in the page.
 
 Place the data inside `data/customdata/custom.data` folder.
 Please refer the config file `cfg/mde.cfg` to change the network configuration, freeze different branches. The model is an extension of YOLOv3 and MiDaS networks. Most of the configurations can be understood if familiar with yolo.
@@ -55,11 +54,33 @@ python src/train.py --data data/customdata/custom.data --batch 8 --cache --cfg c
 
 More details on training in [docs](docs/training.md).
 
+---
+### <div align="center">Further Details</div>
 
-## Further Documentation:
 1. [Model Architecture](docs/model.md)
 2. [Training Strategy](docs/training.md)
 
+---
+### <div align="center">Improvements and Suggestions</div>
+- **Backbone**: Experiment with more advanced backbones such as Vision Transformer or ConvNeXt for better feature extraction.
+Other lightweight backbones like MobileNetV3 or EfficientNet can be explored for applications where efficiency and speed are critical.
+
+- **Multi-Task Learning**: There is alot of literature available on multi-task learning that can be explored and experimented with for this problem. Primarily los
+
+- **Data Augmentation**: This repository does not use as much augmentations, or may be the author experimented with but didn't work. 
+Augmentations such as MixUp, Mosaic, horizontal flips, Brightness, contrast changes, and blurring can be helpful. Augmentation pipelines like Albumentations can be useful for more diverse augmentations.
+Pretraining:
+
+- **Training**: LR Schedulers, optimizers and different configurations of loss functions can be experimented with.
+Learning Rate Scheduling:
+
+
+- **Deployment Improvements**: Model can be quantized and can be exported to ONNX for cross-platform compatibility or TensorRT.
+Real-Time Performance:
+
+- **Others**: Tools like MLFlow, ClearML can be integrated for reproducible trainings along with better visualizations and metrics.
+
+---
 
 ### Refs
 -  https://sarvan0506.medium.com/yolo-v3-and-midas-from-a-single-resnext101-backbone-8ba42948bf65
