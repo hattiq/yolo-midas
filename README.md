@@ -6,6 +6,8 @@ This repository combines YOLOv3 for object detection and MiDaS for monocular dep
 
 ## <div align="center">Documentation</div>
 
+>A `main.py` is not included in the repo as the same can be achived through `src/detect.py`.
+
 ### Install
 
 Clone repo and install [requirements.txt](https://github.com/hattiq/yolo-midas/blob/master/requirements.txt) in a [**Python==3.6.0**](https://www.python.org/) environment.
@@ -59,6 +61,18 @@ More details on training in [docs](docs/training.md).
 
 1. [Model Architecture](docs/model.md)
 2. [Training Strategy](docs/training.md)
+2. [Code](docs/code.md)
+
+---
+### <div align="center">Issues</div>
+Some of the issues faced while working on the code:
+1. Model Weights are not provided.
+2. Dataset provided has some missing images. and does not work directly after downloading it.
+3. A lot of code duplication, as the code is copied from other repos. Removed some of the unused code. But
+As GPU access was not available, Could not reporduce the results.
+4. SSIM code is not provided.
+5. Jupyter notebooks code is broken and are not showing any analysis or visualizations of model and data. So deleted those.
+
 
 ---
 ### <div align="center">Improvements and Suggestions</div>
@@ -69,7 +83,7 @@ Other lightweight backbones like MobileNetV3 or EfficientNet can be explored for
 
 - **Data Augmentation**: This repository does not use as much augmentations, or may be the author experimented with but didn't work. 
 Augmentations such as MixUp, Mosaic, horizontal flips, Brightness, contrast changes, and blurring can be helpful. Augmentation pipelines like Albumentations can be useful for more diverse augmentations.
-Pretraining:
+
 
 - **Training**: LR Schedulers, optimizers and different configurations of loss functions can be experimented with.
 Learning Rate Scheduling:
